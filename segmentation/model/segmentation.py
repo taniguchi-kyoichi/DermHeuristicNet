@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from skimage import filters, morphology, measure
+from skimage import morphology, measure, feature
 import os
 from tqdm import tqdm
 
@@ -12,86 +12,96 @@ class SkinLesionSegmentation:
 
     def preprocess_image(self, image):
         """画像の前処理"""
-        img = image.astype(np.float32)
-        img = cv2.normalize(img, None, 0, 1, cv2.NORM_MINMAX)
+        if image.dtype != np.uint8:
+            image = (image * 255).astype(np.uint8)
 
-        if len(img.shape) == 3:
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        # Convert to LAB color space
+        lab = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)
+        l_chan = lab[:, :, 0]
 
-        return img
-
-    def remove_hair(self, image):
-        """毛髪除去の改善版"""
-        grayscale = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-
-        # Apply black hat filter
-        blackhat = cv2.morphologyEx(grayscale, cv2.MORPH_BLACKHAT, self.small_kernel)
-        _, thresh = cv2.threshold(blackhat, 10, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-        thresh = cv2.dilate(thresh, self.small_kernel, iterations=1)
-        thresh = cv2.medianBlur(thresh, 3)
-
-        return cv2.inpaint(image, thresh, 1, cv2.INPAINT_TELEA)
-
-    def create_initial_mask(self, image):
-        """ABCDルールを考慮した初期マスクの生成"""
-        if len(image.shape) == 3:
-            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        else:
-            gray = image.copy()
-
-        # Enhance contrast for better border detection
+        # Enhance contrast
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(gray)
+        l_chan = clahe.apply(l_chan)
+        lab[:, :, 0] = l_chan
 
-        # Apply Gaussian blur
-        blurred = cv2.GaussianBlur(enhanced, (5, 5), 0)
+        return lab
 
-        # Get edges using Canny
-        edges = cv2.Canny(blurred, 50, 150)
+    def create_initial_mask(self, lab_image):
+        """初期マスクの生成"""
+        # Split channels
+        l_chan = lab_image[:, :, 0]
+        a_chan = lab_image[:, :, 1]
+        b_chan = lab_image[:, :, 2]
 
-        # Create initial mask using Otsu's method
-        _, mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Create mask using a-channel and b-channel (color information)
+        ab_mask = np.zeros_like(l_chan)
 
-        # Combine edge information
-        mask = cv2.bitwise_or(mask, edges)
+        # Looking for significant deviations in a and b channels
+        a_mean, a_std = np.mean(a_chan), np.std(a_chan)
+        b_mean, b_std = np.mean(b_chan), np.std(b_chan)
 
-        return mask
+        # Mark pixels that deviate significantly from the mean
+        color_mask = (
+                (np.abs(a_chan - a_mean) > a_std * 1.5) |
+                (np.abs(b_chan - b_mean) > b_std * 1.5)
+        )
+
+        # Create luminance mask using L-channel
+        l_blur = cv2.GaussianBlur(l_chan, (5, 5), 0)
+        _, l_mask = cv2.threshold(l_blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+        # Combine masks
+        combined_mask = ((color_mask) | (l_mask > 0)).astype(np.uint8) * 255
+
+        # Close small gaps
+        kernel = np.ones((3, 3), np.uint8)
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+        return combined_mask
 
     def refine_mask(self, mask):
-        """マスクの精製とABCDルールの強調"""
+        """マスクの精製"""
         # Remove small objects
-        cleaned = morphology.remove_small_objects(mask.astype(bool), min_size=100)
+        binary = mask > 127
+        cleaned = morphology.remove_small_objects(binary, min_size=150)
 
         # Fill holes
-        filled = morphology.remove_small_holes(cleaned, area_threshold=100)
+        filled = morphology.remove_small_holes(cleaned, area_threshold=500)
 
-        # Keep largest connected component
+        # Get connected components
         labels = measure.label(filled)
         if labels.max() > 0:
-            largest_component = (labels == (np.argmax(np.bincount(labels.flat)[1:]) + 1))
-            filled = largest_component
+            # Keep significant components
+            areas = np.bincount(labels.flat)[1:]
+            mask = np.zeros_like(labels, dtype=np.uint8)
 
-        # Convert to uint8
-        mask = filled.astype(np.uint8) * 255
+            # Keep components that are at least 15% of the largest component
+            largest_area = np.max(areas)
+            for i, area in enumerate(areas, 1):
+                if area >= largest_area * 0.15:
+                    mask[labels == i] = 255
+        else:
+            mask = filled.astype(np.uint8) * 255
 
-        # Enhance borders
+        # Final cleaning
         kernel = np.ones((3, 3), np.uint8)
-        gradient = cv2.morphologyEx(mask, cv2.MORPH_GRADIENT, kernel)
-        mask = cv2.addWeighted(mask, 1, gradient, 0.5, 0)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
 
         return mask
 
     def segment_image(self, image):
-        """改善されたセグメンテーションパイプライン"""
+        """セグメンテーションのメインパイプライン"""
         try:
-            # Remove hair
-            no_hair_image = self.remove_hair(image)
+            if image.dtype != np.uint8:
+                image = (image * 255).astype(np.uint8)
+
+            # Preprocess
+            lab_image = self.preprocess_image(image)
 
             # Create initial mask
-            initial_mask = self.create_initial_mask(no_hair_image)
+            initial_mask = self.create_initial_mask(lab_image)
 
-            # Refine the mask
+            # Refine mask
             refined_mask = self.refine_mask(initial_mask)
 
             # Convert to RGB
@@ -101,7 +111,7 @@ class SkinLesionSegmentation:
 
         except Exception as e:
             print(f"Error in segmentation: {str(e)}")
-            return np.full_like(image, 255)
+            return np.full_like(image, 255, dtype=np.uint8)
 
     def process_directory(self, input_dir, output_dir, min_lesion_size=1000):
         """ディレクトリ内の画像を処理"""
@@ -123,7 +133,11 @@ class SkinLesionSegmentation:
 
                 mask = self.segment_image(image)
 
-                if cv2.countNonZero(cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)) > min_lesion_size:
+                # Adaptive minimum lesion size
+                adaptive_min_size = min(min_lesion_size,
+                                        int(image.shape[0] * image.shape[1] * 0.005))
+
+                if cv2.countNonZero(cv2.cvtColor(mask, cv2.COLOR_RGB2GRAY)) > adaptive_min_size:
                     cv2.imwrite(output_path, mask)
                 else:
                     print(f"Warning: Small lesion detected in {filename}, skipping...")

@@ -12,7 +12,7 @@ def setup_callbacks(config):
 
     callbacks = [
         tf.keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(config.MODEL_DIR, 'best_model.h5'),
+            filepath=os.path.join(config.MODEL_DIR, 'best_model_v4.h5'),
             monitor='val_accuracy',
             mode='max',
             save_best_only=True,
