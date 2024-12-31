@@ -23,7 +23,7 @@ def load_best_model():
     model_inst = model.compile_model(model_inst)
 
     # ベストウェイトのロード
-    best_model_path = os.path.join(config.MODEL_DIR, 'best_model_v4.h5')
+    best_model_path = os.path.join(config.MODEL_DIR, 'best_model_0.8665.h5')
     if not os.path.exists(best_model_path):
         raise FileNotFoundError(f"Best model weights not found at {best_model_path}")
 
