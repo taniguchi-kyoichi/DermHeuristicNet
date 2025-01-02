@@ -23,14 +23,24 @@ class Config:
     DROPOUT_RATE = 0.3
     LABEL_SMOOTHING = 0.1
 
+    # Color diversity configuration
+    COLOR_CLUSTERS = 5
+    COLOR_FEATURE_DIM = 256  # Final dimension for color diversity features
+
     # Directory configuration
     DATASET_DIR = 'HAM10000'
     TRAIN_DIR = f'{DATASET_DIR}/train_dir'
     TEST_DIR = f'{DATASET_DIR}/test_dir'
     TRAIN_SEG_DIR = f'{DATASET_DIR}/train_segmentation'
     TEST_SEG_DIR = f'{DATASET_DIR}/test_segmentation'
+    TRAIN_COLOR_DIR = f'{DATASET_DIR}/train_color_diversity'
+    TEST_COLOR_DIR = f'{DATASET_DIR}/test_color_diversity'
     MODEL_DIR = 'models'
     LOG_DIR = 'logs'
+
+    # Feature dimensions
+    MAIN_FEATURE_DIM = 1536  # InceptionResNetV2 output
+    BOUNDARY_FEATURE_DIM = 384  # Boundary stream output
 
     # Class weights
     CLASS_WEIGHTS = {
